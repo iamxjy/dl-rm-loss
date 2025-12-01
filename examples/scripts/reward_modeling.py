@@ -93,7 +93,16 @@ if __name__ == "__main__":
     ##############
     # Load dataset
     ##############
-    dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
+    if (
+        script_args.dataset_name
+        and os.path.isfile(script_args.dataset_name)
+        and script_args.dataset_name.endswith((".jsonl", ".json"))
+    ):
+        # Local JSON/JSONL file
+        dataset = load_dataset("json", data_files=script_args.dataset_name)
+    else:
+        # Hugging Face Hub dataset name or local dataset directory/script
+        dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
 
     ##########
     # Training
