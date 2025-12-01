@@ -85,7 +85,7 @@ if __name__ == "__main__":
     # Dataset
     ################
     # Load UltraChat dataset
-    dataset = load_dataset("stingning/ultrachat", split="train_sft")
+    dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_gen")
     
     # Create train/test split
     dataset = dataset.train_test_split(test_size=1000, seed=42)
@@ -108,8 +108,14 @@ if __name__ == "__main__":
 
     dataset = dataset.map(format_prompt)
 
+    '''
     train_dataset = dataset["train"]
     eval_dataset = dataset["test"] if training_args.eval_strategy != "no" else None
+    '''
+    train_dataset = dataset["train"].select(range(min(2, len(dataset["train"]))))
+    eval_dataset = None
+    if training_args.eval_strategy != "no":
+        eval_dataset = dataset["test"].select(range(min(2, len(dataset["test"]))))
 
     ################
     # Training
