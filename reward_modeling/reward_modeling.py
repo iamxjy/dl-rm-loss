@@ -21,7 +21,7 @@
 # ///
 
 """
-python rm/reward_modeling.py \
+python reward_modeling/reward_modeling.py \
     --model_name_or_path Qwen/Qwen2-0.5B-Instruct \
     --dataset_name trl-lib/ultrafeedback_binarized \
     --output_dir Qwen2-0.5B-Reward-GCE \
