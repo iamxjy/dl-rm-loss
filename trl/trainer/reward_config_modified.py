@@ -175,7 +175,13 @@ class RewardConfig(TrainingArguments):
         default="bradley_terry",
         metadata={
             "help": "Loss to use for reward model training.",
-            "choices": ["bradley_terry"],
+            "choices": ["bradley_terry", "gce"],
+        },
+    )
+    gce_q: float = field(
+        default=0.7,
+        metadata={
+            "help": "GCE q parameter."
         },
     )
     activation_offloading: bool = field(

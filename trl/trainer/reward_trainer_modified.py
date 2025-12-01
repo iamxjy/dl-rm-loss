@@ -271,7 +271,6 @@ class RewardTrainer(BaseTrainer):
         optimizer_cls_and_kwargs: tuple[type[torch.optim.Optimizer], dict[str, Any]] | None = None,
         preprocess_logits_for_metrics: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
         peft_config: "PeftConfig | None" = None,
-        loss_type: str | None = None,
     ):
         # Args
         if args is None:
@@ -360,9 +359,13 @@ class RewardTrainer(BaseTrainer):
         if peft_config is not None or (is_peft_available() and isinstance(model, PeftModel)):
             model = prepare_peft_model(model, peft_config, args)
 
-        self.loss_type = loss_type or getattr(args, "loss_type", "bradley_terry")
+        self.loss_type = getattr(args, "loss_type", "bradley_terry")
+        self.gce_q = getattr(args, "gce_q", 0.7)
+        if not (0 < self.gce_q <= 1):
+            raise ValueError("gce_q must satisfy 0 < q <= 1.")
         self._loss_fns: dict[str, Callable[[torch.Tensor, torch.Tensor, dict[str, Any]], torch.Tensor]] = {
             "bradley_terry": self._compute_bradley_terry_loss,
+            "gce": self._compute_gce_loss,
         }
 
         # Disable dropout in the model
@@ -596,6 +599,30 @@ class RewardTrainer(BaseTrainer):
         if "margin" in inputs:
             return -nn.functional.logsigmoid(rewards_chosen - rewards_rejected - inputs["margin"]).mean()
         return -nn.functional.logsigmoid(rewards_chosen - rewards_rejected).mean()
+
+    def _compute_gce_loss(
+        self,
+        rewards_chosen: torch.Tensor,
+        rewards_rejected: torch.Tensor,
+        inputs: dict[str, torch.Tensor | Any],
+    ) -> torch.Tensor:
+        logits = rewards_chosen - rewards_rejected
+        if "margin" in inputs:
+            logits = logits - inputs["margin"]
+
+        # softmax probabilities
+        probs = torch.sigmoid(logits)
+        # clamp for numerical stability
+        eps = torch.finfo(probs.dtype).eps
+        probs = probs.clamp(min=eps, max=1 - eps)
+
+        if self.gce_q <= 1e-6:
+            # q basically 0
+            loss = -torch.log(probs)
+        else:
+            # (1 - p^q) / q
+            loss = (1 - probs.pow(self.gce_q)) / self.gce_q
+        return loss.mean()
 
     # Override training step to add activation offloading context.
     def training_step(self, *args, **kwargs):
