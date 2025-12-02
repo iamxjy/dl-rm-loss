@@ -93,16 +93,32 @@ if __name__ == "__main__":
     ##############
     # Load dataset
     ##############
-    if (
-        script_args.dataset_name
-        and os.path.isfile(script_args.dataset_name)
-        and script_args.dataset_name.endswith((".jsonl", ".json"))
-    ):
-        # Local JSON/JSONL file
-        dataset = load_dataset("json", data_files=script_args.dataset_name)
-    else:
-        # Hugging Face Hub dataset name or local dataset directory/script
-        dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
+    # if (
+    #     script_args.dataset_name
+    #     and os.path.isfile(script_args.dataset_name)
+    #     and script_args.dataset_name.endswith((".jsonl", ".json"))
+    # ):
+    #     # Local JSON/JSONL file
+    #     dataset = load_dataset("json", data_files=script_args.dataset_name)
+    # else:
+    #     # Hugging Face Hub dataset name or local dataset directory/script
+    #     dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
+    
+    dataset_dir = script_args.dataset_name
+    train_file = os.path.join(dataset_dir, "train.jsonl")
+    test_file = os.path.join(dataset_dir, "test.jsonl")
+    if not (os.path.isfile(train_file) and os.path.isfile(test_file)):
+        raise FileNotFoundError(
+            f"Dataset files not found in {dataset_dir}"
+        )
+
+    dataset = load_dataset(
+        "json",
+        data_files={
+            "train": train_file,
+            "test": test_file,
+        },
+    )
 
     ##########
     # Training
