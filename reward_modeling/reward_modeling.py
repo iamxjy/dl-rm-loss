@@ -23,7 +23,7 @@
 """
 python reward_modeling/reward_modeling.py \
     --model_name_or_path Qwen/Qwen2-0.5B-Instruct \
-    --dataset_name ultrafeedback_binarized_clean \
+    --dataset_name datasets/ultrafeedback_binarized_clean \
     --output_dir Qwen2-0.5B-Reward-GCE \
     --per_device_train_batch_size 8 \
     --num_train_epochs 1 \
@@ -32,8 +32,7 @@ python reward_modeling/reward_modeling.py \
     --eval_strategy steps \
     --eval_steps 50 \
     --max_length 2048 \
-    --loss_type gce \ # bradley_terry or gce
-    --gce_q 0.7
+    --loss_type bradley_terry
 """
 
 import os

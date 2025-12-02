@@ -12,7 +12,7 @@ from datasets import Dataset, DatasetDict, load_dataset
 DATASET_NAME = "trl-lib/ultrafeedback_binarized"
 NOISE_PROBABILITY = 0.15  # fraction of pairs to swap
 SEED = 42
-OUTPUT_DIR = Path("ultrafeedback_binarized_noisy").expanduser()
+OUTPUT_DIR = Path("datasets/ultrafeedback_binarized_noisy").expanduser()
 
 
 def ensure_dataset_dict(dataset):

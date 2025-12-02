@@ -9,7 +9,7 @@ from datasets import Dataset, DatasetDict, load_dataset
 
 # Adjust these few knobs as needed.
 DATASET_NAME = "trl-lib/ultrafeedback_binarized"
-OUTPUT_DIR = Path("ultrafeedback_binarized_clean").expanduser()
+OUTPUT_DIR = Path("datasets/ultrafeedback_binarized_clean").expanduser()
 
 
 def ensure_dataset_dict(dataset):
