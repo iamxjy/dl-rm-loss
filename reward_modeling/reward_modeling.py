@@ -23,7 +23,7 @@
 """
 python reward_modeling/reward_modeling.py \
     --model_name_or_path Qwen/Qwen2-0.5B-Instruct \
-    --dataset_name trl-lib/ultrafeedback_binarized \
+    --dataset_name datasets/ultrafeedback_binarized_clean \
     --output_dir Qwen2-0.5B-Reward-GCE \
     --per_device_train_batch_size 8 \
     --num_train_epochs 1 \
