@@ -23,8 +23,8 @@
 
 """
 accelerate launch \
-    --config_file examples/accelerate_configs/deepspeed_zero3.yaml \
-    examples/scripts/grpo_modified.py \
+    --config_file examples/accelerate_configs/single_gpu.yaml \
+    grpo/grpo_modified.py \
     --model_name_or_path Qwen/Qwen2.5-3B-Instruct \
     --output_dir grpo-Qwen2.5-3B-Instruct \
     --learning_rate 1e-5 \
@@ -37,7 +37,7 @@ accelerate launch \
     --use_peft \
     --lora_target_modules "q_proj", "v_proj" \
     --log_completions \
-    --reward_model_path Qwen2-0.5B-Reward-clean-BT/checkpoint-969/
+    --reward_model_path reward_modeling/models_noise15_epoch1/Qwen2-0.5B-Reward-clean-BT/checkpoint-969/
 
 """
 
@@ -46,6 +46,7 @@ from dataclasses import dataclass
 
 import torch
 from datasets import load_dataset
+from transformers import AutoTokenizer
 
 from trl import (
     GRPOConfig,
@@ -91,8 +92,14 @@ if __name__ == "__main__":
     ################
     # Dataset
     ################
+    # Set HuggingFace cache directory to avoid disk quota issues
+    # Can be overridden by HF_DATASETS_CACHE environment variable
+    cache_dir = os.getenv("HF_DATASETS_CACHE", "/proj/inf-scaling/iris/datasets_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ["HF_DATASETS_CACHE"] = cache_dir
+    
     # Load UltraChat dataset
-    dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_gen")
+    dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_gen", cache_dir=cache_dir)
     
     # Create train/test split
     dataset = dataset.train_test_split(test_size=1000, seed=42)
@@ -128,11 +135,20 @@ if __name__ == "__main__":
     # Training
     ################
     reward_model_path = os.path.expanduser(script_args.reward_model_path)
+    
+    # Load reward model tokenizer with fix_mistral_regex to avoid tokenization warnings
+    reward_tokenizer = AutoTokenizer.from_pretrained(
+        reward_model_path,
+        fix_mistral_regex=True,
+    )
+    if reward_tokenizer.pad_token is None:
+        reward_tokenizer.pad_token = reward_tokenizer.eos_token
 
     trainer = GRPOTrainer(
         model=model_args.model_name_or_path,
         args=training_args,
         reward_funcs=[reward_model_path],
+        reward_processing_classes=[reward_tokenizer],
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         peft_config=get_peft_config(model_args),
