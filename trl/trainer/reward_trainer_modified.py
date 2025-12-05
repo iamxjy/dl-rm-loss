@@ -463,7 +463,20 @@ class RewardTrainer(BaseTrainer):
         # Build the kwargs for the `map` function
         map_kwargs = {}
         if isinstance(dataset, Dataset):  # IterableDataset does not support num_proc
-            map_kwargs["num_proc"] = args.dataset_num_proc
+            # Use keep_in_memory to control whether dataset stays in memory or is written to disk
+            # When keep_in_memory=True, set num_proc=1 to avoid multiprocessing worker file conflicts
+            keep_in_memory = args.keep_dataset_in_memory
+            map_kwargs["keep_in_memory"] = keep_in_memory
+            if keep_in_memory and args.dataset_num_proc and args.dataset_num_proc > 1:
+                # With keep_in_memory=True, multiprocessing can still cause file handle conflicts
+                # So we disable it to ensure everything stays in memory
+                map_kwargs["num_proc"] = 1
+                logger.warning(
+                    f"dataset_num_proc={args.dataset_num_proc} specified, but using num_proc=1 "
+                    "with keep_in_memory=True to avoid file handle conflicts"
+                )
+            else:
+                map_kwargs["num_proc"] = args.dataset_num_proc or 1
 
         with PartialState().main_process_first():
             if not is_processed:

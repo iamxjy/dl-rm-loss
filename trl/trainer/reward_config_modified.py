@@ -138,6 +138,13 @@ class RewardConfig(TrainingArguments):
         default=None,
         metadata={"help": "Number of processes to use for processing the dataset."},
     )
+    keep_dataset_in_memory: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to keep the dataset in memory during processing. If True, dataset stays in memory. "
+            "If False, dataset is written to disk cache."
+        },
+    )
     eos_token: str | None = field(
         default=None,
         metadata={

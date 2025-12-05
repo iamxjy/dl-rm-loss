@@ -36,6 +36,12 @@ python reward_modeling/reward_modeling.py \
 """
 
 import os
+from dataclasses import dataclass, field
+
+# If HF_DATASETS_CACHE is set in environment, use it early (before imports)
+# This will be overridden by command-line argument if provided
+if "HF_DATASETS_CACHE" in os.environ:
+    os.makedirs(os.environ["HF_DATASETS_CACHE"], exist_ok=True)
 
 import torch
 from accelerate import logging
@@ -53,6 +59,27 @@ from trl.trainer.reward_config_modified import RewardConfig
 from trl.trainer.reward_trainer_modified import RewardTrainer
 
 
+@dataclass
+class RewardModelingScriptArguments(ScriptArguments):
+    """
+    Extended script arguments for reward modeling with cache directory support.
+    """
+    hf_cache_dir: str | None = field(
+        default=None,
+        metadata={
+            "help": "HuggingFace datasets cache directory. If not provided, uses HF_DATASETS_CACHE env var, "
+            "or defaults to system default cache location."
+        },
+    )
+    keep_dataset_in_memory: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to keep the dataset in memory after loading. If True, dataset stays in memory. "
+            "If False, dataset is written to disk cache."
+        },
+    )
+
+
 logger = logging.get_logger(__name__)
 
 # Enable logging in a Hugging Face Space
@@ -60,9 +87,24 @@ os.environ.setdefault("TRACKIO_SPACE_ID", "trl-trackio")
 
 
 if __name__ == "__main__":
-    parser = HfArgumentParser((ScriptArguments, RewardConfig, ModelConfig))
+    parser = HfArgumentParser((RewardModelingScriptArguments, RewardConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_into_dataclasses()
     training_args.gradient_checkpointing_kwargs = dict(use_reentrant=False)
+    # Pass keep_dataset_in_memory flag to training args
+    training_args.keep_dataset_in_memory = script_args.keep_dataset_in_memory
+    
+    # Set HuggingFace cache directory (optional - mainly for future Hub dataset downloads)
+    # Note: With keep_in_memory=True in map operations, intermediate processing stays in memory
+    # so dataset processing doesn't write to disk cache. This is mainly useful for:
+    # - Future HuggingFace Hub dataset downloads
+    # - General cache management
+    # Models/tokenizers use HF_HOME/TRANSFORMERS_CACHE, not HF_DATASETS_CACHE
+    cache_dir = script_args.hf_cache_dir or os.getenv("HF_DATASETS_CACHE")
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        os.environ["HF_DATASETS_CACHE"] = cache_dir
+        print(f"Using HuggingFace datasets cache directory: {cache_dir}")
+    # If not set, HuggingFace will use default location (~/.cache/huggingface/datasets)
 
     ################
     # Model & Tokenizer
@@ -110,13 +152,14 @@ if __name__ == "__main__":
         raise FileNotFoundError(
             f"Dataset files not found in {dataset_dir}"
         )
-
+    
     dataset = load_dataset(
         "json",
         data_files={
             "train": train_file,
             "test": test_file,
         },
+        keep_in_memory=script_args.keep_dataset_in_memory,
     )
 
     ##########
