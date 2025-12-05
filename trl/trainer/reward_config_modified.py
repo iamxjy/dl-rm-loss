@@ -169,6 +169,7 @@ class RewardConfig(TrainingArguments):
         default=None,
         metadata={"help": "If set, the sequences will be padded to a multiple of this value."},
     )
+    
 
     # Parameters that control the training
     center_rewards_coefficient: float | None = field(
