@@ -19,7 +19,7 @@ source /path/to/venv/bin/activate
 
 # NCCL networking hints (tune to your interfaces)
 export NCCL_DEBUG=warn
-# export NCCL_SOCKET_IFNAME=eth0          # change to ib0/enp* as needed
+# export NCCL_SOCKET_IFNAME=ib0          # change to ib0/enp* as needed
 export NCCL_IB_DISABLE=0                # set to 1 if no InfiniBand
 export OMP_NUM_THREADS=2
 
