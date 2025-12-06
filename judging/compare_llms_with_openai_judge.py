@@ -10,8 +10,11 @@ Run:
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Iterable, Sequence
 
 import torch
@@ -60,6 +63,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=True,
         help="Apply tokenizer chat template (recommended for chat-style models like Qwen3).",
+    )
+    parser.add_argument(
+        "--jsonl-out",
+        type=str,
+        nargs="?",
+        const="judging/results/per_prompt.jsonl",
+        default="judging/results/per_prompt.jsonl",
+        help="Path to write per-prompt records as JSONL (defaults to judging/results/per_prompt.jsonl when omitted).",
+    )
+    parser.add_argument(
+        "--csv-out",
+        type=str,
+        nargs="?",
+        const="judging/results/summary.csv",
+        default="judging/results/summary.csv",
+        help="Path to write a CSV summary (defaults to judging/results/summary.csv when omitted).",
     )
     return parser.parse_args()
 
@@ -175,6 +194,96 @@ def load_arena_hard_prompts() -> list[str]:
     return prompts
 
 
+def _prepare_path(path: str | os.PathLike[str]) -> Path:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def save_jsonl_per_prompt(
+    path: str,
+    prompts: Sequence[str],
+    pairs: Sequence[Sequence[str]],
+    ranks: Sequence[int],
+    run_metadata: dict,
+) -> None:
+    """Write one JSON object per prompt with full completions and judge pick."""
+    p = _prepare_path(path)
+    with p.open("w", encoding="utf-8") as f:
+        for idx, (prompt, pair, rank) in enumerate(zip(prompts, pairs, ranks, strict=True)):
+            winner = (
+                run_metadata["model_a"]
+                if rank == 0
+                else run_metadata["model_b"]
+                if rank == 1
+                else None
+            )
+            record = {
+                **run_metadata,
+                "prompt_idx": idx,
+                "prompt": prompt,
+                "completion_a": pair[0],
+                "completion_b": pair[1],
+                "judge_pick": rank,
+                "winner_model": winner,
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def save_csv_summary(
+    path: str,
+    prompts: Sequence[str],
+    ranks: Sequence[int],
+    run_metadata: dict,
+    wins_a: int,
+    wins_b: int,
+) -> None:
+    """Write a lightweight CSV: per-prompt winner plus a totals row."""
+    p = _prepare_path(path)
+    fieldnames = [
+        "prompt_idx",
+        "prompt",
+        "judge_pick",
+        "winner_model",
+        "model_a",
+        "model_b",
+        "judge_model",
+    ]
+    with p.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for idx, (prompt, rank) in enumerate(zip(prompts, ranks, strict=True)):
+            winner = (
+                run_metadata["model_a"]
+                if rank == 0
+                else run_metadata["model_b"]
+                if rank == 1
+                else None
+            )
+            writer.writerow(
+                {
+                    "prompt_idx": idx,
+                    "prompt": prompt,
+                    "judge_pick": rank,
+                    "winner_model": winner,
+                    "model_a": run_metadata["model_a"],
+                    "model_b": run_metadata["model_b"],
+                    "judge_model": run_metadata["judge_model"],
+                }
+            )
+        writer.writerow(
+            {
+                "prompt_idx": "total",
+                "prompt": "",
+                "judge_pick": "",
+                "winner_model": f"{wins_a} vs {wins_b}",
+                "model_a": run_metadata["model_a"],
+                "model_b": run_metadata["model_b"],
+                "judge_model": run_metadata["judge_model"],
+            }
+        )
+
+
 def main() -> None:
     args = parse_args()
     load_dotenv()
@@ -204,6 +313,15 @@ def main() -> None:
     model_a, tok_a = load_model_and_tokenizer(args.model_a, device)
     model_b, tok_b = load_model_and_tokenizer(args.model_b, device)
 
+    run_metadata = {
+        "model_a": args.model_a,
+        "model_b": args.model_b,
+        "judge_model": args.judge_model,
+        "use_chat_template": args.use_chat_template,
+        "generation": asdict(gen_config),
+        "num_prompts": len(prompts),
+    }
+
     print(f"Generating completions for {len(prompts)} prompts...")
     completions_a: list[str] = []
     completions_b: list[str] = []
@@ -224,17 +342,18 @@ def main() -> None:
 
     wins_a = sum(rank == 0 for rank in ranks)
     wins_b = sum(rank == 1 for rank in ranks)
-    print("Results per prompt:")
-    for i, (prompt, pair, rank) in enumerate(zip(prompts, pairs, ranks, strict=True)):
-        print(f"\nPrompt {i}: {prompt}")
-        print(f"  A: {pair[0]}")
-        print(f"  B: {pair[1]}")
-        print(f"  Judge picked: {'A' if rank == 0 else 'B' if rank == 1 else rank}")
-
+    if args.jsonl_out:
+        save_jsonl_per_prompt(args.jsonl_out, prompts, pairs, ranks, run_metadata)
+        print(f"Wrote per-prompt JSONL to {args.jsonl_out}")
+    if args.csv_out:
+        save_csv_summary(args.csv_out, prompts, ranks, run_metadata, wins_a, wins_b)
+        print(f"Wrote CSV summary to {args.csv_out}")
     total = len(prompts)
-    print("\nSummary:")
-    print(f"{args.model_a} wins: {wins_a}/{total}")
-    print(f"{args.model_b} wins: {wins_b}/{total}")
+    ties = total - wins_a - wins_b
+    print(
+        f"Final summary: {args.model_a} wins {wins_a}/{total}, "
+        f"{args.model_b} wins {wins_b}/{total}, ties {ties}."
+    )
 
 
 if __name__ == "__main__":
