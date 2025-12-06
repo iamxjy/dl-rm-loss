@@ -71,13 +71,6 @@ class RewardModelingScriptArguments(ScriptArguments):
             "or defaults to system default cache location."
         },
     )
-    keep_dataset_in_memory: bool = field(
-        default=True,
-        metadata={
-            "help": "Whether to keep the dataset in memory after loading. If True, dataset stays in memory. "
-            "If False, dataset is written to disk cache."
-        },
-    )
 
 
 logger = logging.get_logger(__name__)
@@ -90,8 +83,6 @@ if __name__ == "__main__":
     parser = HfArgumentParser((RewardModelingScriptArguments, RewardConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_into_dataclasses()
     training_args.gradient_checkpointing_kwargs = dict(use_reentrant=False)
-    # Pass keep_dataset_in_memory flag to training args
-    training_args.keep_dataset_in_memory = script_args.keep_dataset_in_memory
     
     # Set HuggingFace cache directory (optional - mainly for future Hub dataset downloads)
     # Note: With keep_in_memory=True in map operations, intermediate processing stays in memory
@@ -153,14 +144,20 @@ if __name__ == "__main__":
             f"Dataset files not found in {dataset_dir}"
         )
     
+    logger.info(f"Loading dataset with keep_in_memory={training_args.keep_dataset_in_memory}")
+    
+    # Use the cache directory specified by user
+    cache_dir = script_args.hf_cache_dir or os.getenv("HF_DATASETS_CACHE")
+    
     dataset = load_dataset(
         "json",
         data_files={
             "train": train_file,
             "test": test_file,
         },
-        keep_in_memory=script_args.keep_dataset_in_memory,
-    )
+        keep_in_memory=training_args.keep_dataset_in_memory,
+        cache_dir=cache_dir,  # Use the user-specified cache directory
+    ) 
 
     ##########
     # Training
