@@ -34,11 +34,15 @@ class GenerationConfig:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare two HF models with an OpenAI LLM judge.")
-    parser.add_argument("--model-a", default="Qwen/Qwen2-0.5B-Instruct", help="HF model id for candidate A.")
+    parser.add_argument(
+        "--model-a",
+        default="Qwen/Qwen2-0.5B-Instruct",
+        help="HF model id or local path for candidate A.",
+    )
     parser.add_argument(
         "--model-b",
         default="Qwen/Qwen3-0.6B",
-        help="HF model id for candidate B.",
+        help="HF model id or local path for candidate B.",
     )
     parser.add_argument(
         "--arena-hard",
@@ -57,12 +61,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8,
         help="Batch size for generation.",
-    )
-    parser.add_argument(
-        "--use-chat-template",
-        action="store_true",
-        default=True,
-        help="Apply tokenizer chat template (recommended for chat-style models like Qwen3).",
     )
     parser.add_argument(
         "--jsonl-out",
@@ -84,11 +82,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_model_and_tokenizer(model_id: str, device: str):
+    model_id = os.path.expanduser(model_id)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     # Some tiny models may not have a pad token; fall back to eos.
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(model_id).to(device)
+    model.eval()
     return model, tokenizer
 
 
@@ -98,12 +98,11 @@ def generate(
     prompts: Sequence[str],
     device: str,
     config: GenerationConfig,
-    use_chat_template: bool,
 ) -> list[str]:
     if isinstance(prompts, str):
         prompts = [prompts]
 
-    if use_chat_template and getattr(tokenizer, "chat_template", None):
+    if getattr(tokenizer, "chat_template", None):
         prompts = [
             tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
@@ -292,9 +291,12 @@ def main() -> None:
         raise SystemExit("Please set OPENAI_API_KEY in the environment.")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    model_a_id = os.path.expanduser(args.model_a)
+    model_b_id = os.path.expanduser(args.model_b)
+
     print(f"Using device: {device}")
-    print(f"Model A: {args.model_a}")
-    print(f"Model B: {args.model_b}")
+    print(f"Model A: {model_a_id}")
+    print(f"Model B: {model_b_id}")
     print(f"Judge model: {args.judge_model}")
 
     if args.arena_hard:
@@ -310,14 +312,13 @@ def main() -> None:
         prompts = prompts[: args.max_prompts]
 
     gen_config = GenerationConfig()
-    model_a, tok_a = load_model_and_tokenizer(args.model_a, device)
-    model_b, tok_b = load_model_and_tokenizer(args.model_b, device)
+    model_a, tok_a = load_model_and_tokenizer(model_a_id, device)
+    model_b, tok_b = load_model_and_tokenizer(model_b_id, device)
 
     run_metadata = {
-        "model_a": args.model_a,
-        "model_b": args.model_b,
+        "model_a": model_a_id,
+        "model_b": model_b_id,
         "judge_model": args.judge_model,
-        "use_chat_template": args.use_chat_template,
         "generation": asdict(gen_config),
         "num_prompts": len(prompts),
     }
@@ -331,8 +332,8 @@ def main() -> None:
             yield seq[idx : idx + batch_size]
 
     for prompt_batch in batched(list(prompts), args.batch_size):
-        completions_a.extend(generate(model_a, tok_a, prompt_batch, device, gen_config, args.use_chat_template))
-        completions_b.extend(generate(model_b, tok_b, prompt_batch, device, gen_config, args.use_chat_template))
+        completions_a.extend(generate(model_a, tok_a, prompt_batch, device, gen_config))
+        completions_b.extend(generate(model_b, tok_b, prompt_batch, device, gen_config))
 
     pairs = [list(pair) for pair in zip(completions_a, completions_b, strict=True)]
 
@@ -351,8 +352,8 @@ def main() -> None:
     total = len(prompts)
     ties = total - wins_a - wins_b
     print(
-        f"Final summary: {args.model_a} wins {wins_a}/{total}, "
-        f"{args.model_b} wins {wins_b}/{total}, ties {ties}."
+        f"Final summary: {model_a_id} wins {wins_a}/{total}, "
+        f"{model_b_id} wins {wins_b}/{total}, ties {ties}."
     )
 
 
