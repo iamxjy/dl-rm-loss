@@ -363,9 +363,17 @@ class RewardTrainer(BaseTrainer):
         self.gce_q = getattr(args, "gce_q", 0.7)
         if not (0 < self.gce_q <= 1):
             raise ValueError("gce_q must satisfy 0 < q <= 1.")
+        self.sce_alpha = getattr(args, "sce_alpha", 1.0)
+        self.sce_beta = getattr(args, "sce_beta", 0.5)
+        self.sce_label_smoothing = getattr(args, "sce_label_smoothing", 1e-4)
+        if self.sce_alpha < 0 or self.sce_beta < 0:
+            raise ValueError("sce_alpha and sce_beta must be non-negative.")
+        if not (0 <= self.sce_label_smoothing < 0.5):
+            raise ValueError("sce_label_smoothing must be in [0, 0.5).")
         self._loss_fns: dict[str, Callable[[torch.Tensor, torch.Tensor, dict[str, Any]], torch.Tensor]] = {
             "bradley_terry": self._compute_bradley_terry_loss,
             "gce": self._compute_gce_loss,
+            "sce": self._compute_sce_loss,
         }
 
         # Disable dropout in the model
@@ -635,6 +643,32 @@ class RewardTrainer(BaseTrainer):
         else:
             # (1 - p^q) / q
             loss = (1 - probs.pow(self.gce_q)) / self.gce_q
+        return loss.mean()
+
+    def _compute_sce_loss(
+        self,
+        rewards_chosen: torch.Tensor,
+        rewards_rejected: torch.Tensor,
+        inputs: dict[str, torch.Tensor | Any],
+    ) -> torch.Tensor:
+        """Symmetric cross-entropy for binary preference (chosen is positive)."""
+        logits = rewards_chosen - rewards_rejected
+        if "margin" in inputs:
+            logits = logits - inputs["margin"]
+
+        probs = torch.sigmoid(logits)
+        eps = torch.finfo(probs.dtype).eps
+        probs = probs.clamp(min=eps, max=1 - eps)
+
+        # Forward CE with target y=1
+        forward_ce = -torch.log(probs)
+
+        # Reverse CE: treat prediction as labels, clamp/smooth ground truth to avoid log(0)
+        pos_label = max(1.0 - self.sce_label_smoothing, eps)
+        neg_label = max(self.sce_label_smoothing, eps)
+        reverse_ce = -(probs * torch.log(torch.tensor(pos_label, device=probs.device, dtype=probs.dtype)) + (1 - probs) * torch.log(torch.tensor(neg_label, device=probs.device, dtype=probs.dtype)))
+
+        loss = self.sce_alpha * forward_ce + self.sce_beta * reverse_ce
         return loss.mean()
 
     # Override training step to add activation offloading context.

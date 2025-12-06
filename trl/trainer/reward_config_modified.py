@@ -183,7 +183,7 @@ class RewardConfig(TrainingArguments):
         default="bradley_terry",
         metadata={
             "help": "Loss to use for reward model training.",
-            "choices": ["bradley_terry", "gce"],
+            "choices": ["bradley_terry", "gce", "sce"],
         },
     )
     gce_q: float = field(
@@ -191,6 +191,18 @@ class RewardConfig(TrainingArguments):
         metadata={
             "help": "GCE q parameter."
         },
+    )
+    sce_alpha: float = field(
+        default=1.0,
+        metadata={"help": "SCE forward CE weight."},
+    )
+    sce_beta: float = field(
+        default=0.5,
+        metadata={"help": "SCE reverse CE weight."},
+    )
+    sce_label_smoothing: float = field(
+        default=1e-4,
+        metadata={"help": "SCE label smoothing applied to reverse term."},
     )
     activation_offloading: bool = field(
         default=False,
