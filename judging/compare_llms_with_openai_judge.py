@@ -1,7 +1,7 @@
 """Compare two models using OpenAI as a pairwise judge.
 
 Run:
-    OPENAI_API_KEY=... python judging/compare_llms_with_openai_judge.py \
+    python judging/compare_llms_with_openai_judge.py \
         --model-a Qwen/Qwen2-0.5B-Instruct \
         --model-b Qwen/Qwen3-0.6B \
         --judge-model gpt-4o-mini
@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Iterable, Sequence
 
 import torch
 from datasets import load_dataset
@@ -117,29 +117,61 @@ def generate(
 
 
 def load_arena_hard_prompts() -> list[str]:
-    """Load Arena-Hard-Auto v2.0 prompts from the Hugging Face Hub (train split)."""
+    """Load Arena-Hard-Auto v2.0 prompts from question.jsonl via datasets."""
     cache_dir = os.getenv("HF_DATASETS_CACHE")
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
 
-    ds = load_dataset("lmarena-ai/arena-hard-auto", "arena-hard-v2.0", split="train", cache_dir=cache_dir)
+    # Only load the v2.0 question file and keep streaming to tolerate schema variety.
+    ds: Iterable[dict] = load_dataset(
+        "lmarena-ai/arena-hard-auto",
+        data_files="data/arena-hard-v2.0/question.jsonl",
+        split="train",
+        streaming=True,
+        cache_dir=cache_dir,
+    )
+
+    def extract_prompt(row: dict) -> str | None:
+        # 1) messages/turns-style schemas
+        for key in ("messages", "turns"):
+            seq = row.get(key)
+            if isinstance(seq, list) and seq:
+                first = seq[0]
+                if isinstance(first, dict):
+                    content = first.get("content") or first.get("text")
+                    if isinstance(content, str):
+                        return content
+                    # If content is a list of segments, consider joining them.
+                elif isinstance(first, str):
+                    return first
+
+        # 2) Simple text fields
+        for key in ("prompt", "question", "instruction", "user"):
+            v = row.get(key)
+            if isinstance(v, str):
+                return v
+
+        return None
+
+    iterator = iter(ds)
+    try:
+        first_row = next(iterator)
+    except StopIteration:
+        raise ValueError("No rows found in Arena-Hard-Auto v2.0 question.jsonl.")
+
     prompts: list[str] = []
-    for row in ds:
-        prompt = (
-            row.get("prompt")
-            or row.get("question")
-            or row.get("instruction")
-            or row.get("user")
-        )
-        if prompt is None:
-            continue
-        if isinstance(prompt, str):
+    first_prompt = extract_prompt(first_row)
+    if first_prompt:
+        prompts.append(first_prompt)
+
+    for row in iterator:
+        prompt = extract_prompt(row)
+        if prompt:
             prompts.append(prompt)
-        elif isinstance(prompt, list):
-            # In case prompt is tokenized or chat-formatted list, best-effort join.
-            prompts.append(" ".join(str(p) for p in prompt))
+
     if not prompts:
-        raise ValueError("No prompts found in Arena-Hard-Auto v2.0 dataset.")
+        raise ValueError("No prompts extracted from Arena-Hard-Auto v2.0 question.jsonl.")
+
     return prompts
 
 
