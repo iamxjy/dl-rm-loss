@@ -44,17 +44,23 @@ def parse_args() -> argparse.Namespace:
         default="Qwen/Qwen3-0.6B",
         help="HF model id or local path for candidate B.",
     )
-    parser.add_argument(
+    prompt_group = parser.add_mutually_exclusive_group()
+    prompt_group.add_argument(
         "--arena-hard",
         action="store_true",
         help="Use Arena-Hard-Auto v2.0 prompts.",
+    )
+    prompt_group.add_argument(
+        "--ultrachat-test-gen",
+        action="store_true",
+        help="Use HuggingFaceH4/ultrachat_200k test_gen prompts.",
     )
     parser.add_argument("--judge-model", default="gpt-4o-mini", help="OpenAI model id for judging.")
     parser.add_argument(
         "--max-prompts",
         type=int,
-        default=None,
-        help="Limit number of prompts evaluated (if provided).",
+        default=1_000,
+        help="Limit number of prompts evaluated (defaults to 1000).",
     )
     parser.add_argument(
         "--batch-size",
@@ -193,6 +199,21 @@ def load_arena_hard_prompts() -> list[str]:
     return prompts
 
 
+def load_ultrachat_test_gen_prompts() -> list[str]:
+    """Load prompts from HuggingFaceH4/ultrachat_200k test_gen split."""
+    cache_dir = os.getenv("HF_DATASETS_CACHE")
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+
+    ds = load_dataset("HuggingFaceH4/ultrachat_200k", split="test_gen", cache_dir=cache_dir)
+    prompts = [p for p in ds["prompt"] if isinstance(p, str)]
+
+    if not prompts:
+        raise ValueError("No prompts extracted from HuggingFaceH4/ultrachat_200k test_gen.")
+
+    return prompts
+
+
 def _prepare_path(path: str | os.PathLike[str]) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -301,8 +322,10 @@ def main() -> None:
 
     if args.arena_hard:
         prompts: Sequence[str] = load_arena_hard_prompts()
+    elif args.ultrachat_test_gen:
+        prompts = load_ultrachat_test_gen_prompts()
     else:
-        prompts: Sequence[str] = (
+        prompts = (
             "Explain gravity like I'm 12.",
             "Give me a 1-sentence summary of the French Revolution.",
             "List three creative ice cream flavors.",
