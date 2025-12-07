@@ -351,8 +351,8 @@ class OpenAIPairwiseJudge(BasePairwiseJudge):
         system_prompt (`str`, *optional*):
             System prompt to be used for the judge. If not provided, a default prompt is used. Note that the system
             prompt should contain the following placeholders: `{prompt}`, `{response0}`, and `{response1}`. Also, the
-            inference is called with `max_tokens=1`, consequently the system prompt should ask for a single token
-            response.
+            inference is called with `max_completion_tokens=8`, consequently the system prompt should ask for a single
+            token response (the extra tokens provide headroom to avoid server-side truncation errors).
         max_requests (`int` or `None`, *optional*, defaults to `1000`):
             Maximum number of requests to make to the OpenAI API. If set to `None`, there is no limit.
     """
@@ -389,10 +389,44 @@ class OpenAIPairwiseJudge(BasePairwiseJudge):
         def get_rank(prompt, candidates):
             content = self.system_prompt.format(prompt=prompt, response0=candidates[0], response1=candidates[1])
             messages = [{"role": "user", "content": content}]
-            completion = self.client.chat.completions.create(model=self.model, messages=messages, max_tokens=1)
-            response = completion.choices[0].message.content
-            if response in ["0", "1"]:
-                return int(response)
+            try:
+                completion = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_completion_tokens=16,  # allow a few extra tokens to avoid truncation
+                    reasoning_effort="none",
+                )
+            except Exception as exc:  # Defensive: avoid crashing the whole run on a single bad request.
+                logging.warning("OpenAI judge request failed for prompt '%s': %s", prompt, exc)
+                return -1
+            choice = completion.choices[0]
+            raw_content = choice.message.content
+            # Normalize the response for both legacy string and newer list payloads.
+            # Newer OpenAI clients may return a list of content parts; normalize to string.
+            if isinstance(raw_content, list):
+                parts = []
+                for part in raw_content:
+                    text = getattr(part, "text", None) or part.get("text") if isinstance(part, dict) else None
+                    if text:
+                        parts.append(text)
+                response = "".join(parts).strip()
+            elif raw_content is None:
+                response = ""
+            else:
+                response = str(raw_content).strip()
+
+            finish_reason = getattr(choice, "finish_reason", None)
+            # Debug visibility for judge outputs.
+            # print(
+            #     f"[judge] prompt snippet={prompt[:80]!r} finish_reason={finish_reason!r} "
+            #     f"raw_content={raw_content!r} parsed={response!r}"
+            # )
+
+            # Accept 0/1 anywhere in the parsed string, default to -1 otherwise.
+            if response.startswith("0"):
+                return 0
+            if response.startswith("1"):
+                return 1
             else:
                 logging.debug(f"Invalid response from the judge model: '{response}'. Returning -1.")
                 return -1

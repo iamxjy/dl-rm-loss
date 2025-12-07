@@ -1,10 +1,4 @@
 """Compare two models using OpenAI as a pairwise judge.
-
-Run:
-    python judging/compare_llms_with_openai_judge.py \
-        --model-a Qwen/Qwen2-0.5B-Instruct \
-        --model-b Qwen/Qwen3-0.6B \
-        --judge-model gpt-4o-mini
 """
 
 from __future__ import annotations
@@ -55,7 +49,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use HuggingFaceH4/ultrachat_200k test_gen prompts.",
     )
-    parser.add_argument("--judge-model", default="gpt-5-mini", help="OpenAI model id for judging.")
+    parser.add_argument("--judge-model", default="gpt-5.1", help="OpenAI model id for judging.")
     parser.add_argument(
         "--max-prompts",
         type=int,
