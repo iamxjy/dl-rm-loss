@@ -143,3 +143,8 @@ checklink/cookies.txt
 nbs/wandb/
 examples/notebooks/wandb/
 wandb/
+# Personal wandb API keys (never commit these!)
+**/iris_wandb_config/
+**/*_wandb_config/
+**/wandb_api_key.txt
+**/wandb_config/api_key.txt
