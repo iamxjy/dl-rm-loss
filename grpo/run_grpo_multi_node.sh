@@ -1,11 +1,11 @@
 #!/bin/bash
-# LSF job script for 3 nodes x 8 GPUs (24 processes) using accelerate
+# LSF job script for 12 nodes x 8 GPUs (96 processes) using accelerate
 # Fill in queue/project paths before submission.
 
 #BSUB -J grpo
 #BSUB -q normal
 #BSUB -G grp_runtime
-#BSUB -n 3
+#BSUB -n 12
 #BSUB -R "span[ptile=1]"
 #BSUB -W 24:00
 #BSUB -M 5T
@@ -141,8 +141,8 @@ accelerate launch \
   --main_process_ip MASTER_NODE_PLACEHOLDER \
   --main_process_port 29500 \
   grpo/grpo_gpu.py \
-    --model_name_or_path Qwen/Qwen3-4B-Base \
-    --output_dir grpo/grpo-Qwen3-4B-Base \
+    --model_name_or_path Qwen/Qwen3-0.6B-Base \
+    --output_dir grpo/grpo-Qwen3-0.6B-Base \
     --learning_rate 1e-5 \
     --gradient_checkpointing \
     --gradient_checkpointing_kwargs '{"use_reentrant": false}' \
@@ -159,7 +159,7 @@ accelerate launch \
     --logging_steps 10 \
     --save_steps 100 \
     --eval_steps 100 \
-    --run_name grpo-Qwen3-4B-$(date +%Y%m%d-%H%M%S) 2>&1
+    --run_name grpo-Qwen3-0.6B-$(date +%Y%m%d-%H%M%S) 2>&1
 LAUNCH_EOF
 
 # Replace placeholder with actual master node

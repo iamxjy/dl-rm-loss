@@ -230,6 +230,13 @@ if __name__ == "__main__":
     train_dataset = dataset["train"]
     eval_dataset = dataset["test"] if training_args.eval_strategy != "no" else None
 
+    # Reduce dataset to 1/15 of original size for faster training
+    original_size = len(train_dataset)
+    target_size = original_size // 15
+    print(f"[Rank {state.process_index}] Reducing dataset from {original_size} to {target_size} samples (1/15 size)", flush=True)
+    train_dataset = train_dataset.select(range(target_size))
+    print(f"[Rank {state.process_index}] Dataset reduced successfully, new size: {len(train_dataset)}", flush=True)
+
     if script_args.use_debug_subset:
         train_dataset = train_dataset.select(
             range(min(script_args.debug_max_train_samples, len(train_dataset)))
@@ -259,6 +266,18 @@ if __name__ == "__main__":
         reward_tokenizer.pad_token = reward_tokenizer.eos_token
     
     print(f"[Rank {state.process_index}] Reward tokenizer loaded successfully", flush=True)
+    
+    # Load policy model tokenizer explicitly (Qwen3-0.6B-Base doesn't have a processor, only tokenizer)
+    print(f"[Rank {state.process_index}] Loading policy model tokenizer from {model_args.model_name_or_path} (local cache)...", flush=True)
+    policy_tokenizer = AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=hf_cache_dir,
+        local_files_only=True,  # Only use local cache, no downloads
+    )
+    if policy_tokenizer.pad_token is None:
+        policy_tokenizer.pad_token = policy_tokenizer.eos_token
+    print(f"[Rank {state.process_index}] Policy tokenizer loaded successfully", flush=True)
+    
     print(f"[Rank {state.process_index}] Initializing GRPOTrainer with policy model: {model_args.model_name_or_path}", flush=True)
     print(f"[Rank {state.process_index}] Reward model path: {reward_model_path}", flush=True)
     
@@ -285,6 +304,7 @@ if __name__ == "__main__":
         args=training_args,
         reward_funcs=[reward_model_path],
         reward_processing_classes=[reward_tokenizer],
+        processing_class=policy_tokenizer,  # Explicitly pass tokenizer for policy model
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         peft_config=get_peft_config(model_args),

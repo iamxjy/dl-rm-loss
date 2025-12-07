@@ -3,11 +3,11 @@ debug: false
 distributed_type: MULTI_GPU
 downcast_bf16: 'no'
 gpu_ids: all
-machine_rank: 0  # set to 0,1,2 on each node
+machine_rank: 0  # set to 0,1,2,3,4,5,6,7,8,9,10,11 on each node
 main_training_function: main
 mixed_precision: 'fp16'
-num_machines: 3 # number of nodes
-num_processes: 24  # Total GPUs: 3 nodes × 8 GPUs each
+num_machines: 12 # number of nodes
+num_processes: 96  # Total GPUs: 12 nodes × 8 GPUs each
 main_process_ip: null  # set to rank-0 node's IP
 main_process_port: 29500
 rdzv_backend: static

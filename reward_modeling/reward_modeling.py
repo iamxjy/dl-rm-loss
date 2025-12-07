@@ -38,6 +38,39 @@ python reward_modeling/reward_modeling.py \
 import os
 from dataclasses import dataclass, field
 
+# Disable trackio to avoid HuggingFace authentication issues
+# (trackio requires HF token which causes errors on shared accounts)
+os.environ.pop("TRACKIO_SPACE_ID", None)  # Remove if set
+
+# Configure wandb for personal account FIRST (before ANY imports that might initialize wandb)
+# Personal wandb config directory (keeps settings separate on shared accounts)
+WANDB_PERSONAL_DIR = "/proj/inf-scaling/iris/iris_wandb_config"
+WANDB_API_KEY_FILE = os.path.join(WANDB_PERSONAL_DIR, "api_key.txt")
+
+# Try to load API key from file (created by setup_wandb.sh)
+wandb_api_key = None
+if os.path.exists(WANDB_API_KEY_FILE):
+    with open(WANDB_API_KEY_FILE, 'r') as f:
+        wandb_api_key = f.read().strip()
+
+# Also check if API key is set as environment variable (takes precedence)
+if os.getenv("WANDB_API_KEY"):
+    wandb_api_key = os.getenv("WANDB_API_KEY")
+
+# Set up wandb directories (MUST be set before any wandb imports)
+os.environ["WANDB_CONFIG_DIR"] = WANDB_PERSONAL_DIR
+os.environ["WANDB_CACHE_DIR"] = os.path.join(WANDB_PERSONAL_DIR, "cache")
+os.environ["WANDB_DATA_DIR"] = os.path.join(WANDB_PERSONAL_DIR, "data")
+
+# Create wandb directories if they don't exist
+os.makedirs(WANDB_PERSONAL_DIR, exist_ok=True)
+os.makedirs(os.environ["WANDB_CACHE_DIR"], exist_ok=True)
+os.makedirs(os.environ["WANDB_DATA_DIR"], exist_ok=True)
+
+# Set API key if provided
+if wandb_api_key:
+    os.environ["WANDB_API_KEY"] = wandb_api_key
+
 # If HF_DATASETS_CACHE is set in environment, use it early (before imports)
 # This will be overridden by command-line argument if provided
 if "HF_DATASETS_CACHE" in os.environ:
@@ -75,14 +108,46 @@ class RewardModelingScriptArguments(ScriptArguments):
 
 logger = logging.get_logger(__name__)
 
-# Enable logging in a Hugging Face Space
-os.environ.setdefault("TRACKIO_SPACE_ID", "trl-trackio")
+# Print wandb status after imports (so we can use print safely)
+if wandb_api_key:
+    print(f"✓ Using personal wandb API key (config: {WANDB_PERSONAL_DIR})")
+    print("✓ wandb logging enabled")
+else:
+    print("WARNING: WANDB_API_KEY not found. Disabling wandb for this run.")
+    print("To enable wandb:")
+    print(f"  1. Run: ./grpo/setup_wandb.sh (saves key to {WANDB_API_KEY_FILE})")
+    print("  2. Or set environment variable: export WANDB_API_KEY='your_key_here'")
+    print("  3. The API key file is gitignored and will NOT be committed to git")
+    os.environ["WANDB_MODE"] = "disabled"
+    os.environ["WANDB_DISABLED"] = "true"
 
 
 if __name__ == "__main__":
     parser = HfArgumentParser((RewardModelingScriptArguments, RewardConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_into_dataclasses()
     training_args.gradient_checkpointing_kwargs = dict(use_reentrant=False)
+    
+    # Ensure trackio is not in report_to (to avoid HF authentication errors)
+    # If report_to is None or empty, default to wandb only (no trackio)
+    if not hasattr(training_args, 'report_to') or not training_args.report_to:
+        training_args.report_to = ["wandb"] if wandb_api_key else ["none"]
+    elif isinstance(training_args.report_to, str):
+        # Convert string to list, remove trackio
+        report_list = [r.strip() for r in training_args.report_to.split(',')]
+        report_list = [r for r in report_list if r and r.lower() != 'trackio']
+        training_args.report_to = report_list if report_list else (["wandb"] if wandb_api_key else ["none"])
+    elif isinstance(training_args.report_to, list):
+        # Remove trackio from list
+        training_args.report_to = [r for r in training_args.report_to if r and r.lower() != 'trackio']
+        if not training_args.report_to:
+            training_args.report_to = ["wandb"] if wandb_api_key else ["none"]
+    
+    # Set wandb run name to match output directory name
+    if training_args.output_dir:
+        # Extract just the directory name (not full path)
+        run_name = os.path.basename(os.path.normpath(training_args.output_dir))
+        training_args.run_name = run_name
+        print(f"Setting wandb run_name to: {run_name}")
     
     # Set HuggingFace cache directory (optional - mainly for future Hub dataset downloads)
     # Note: With keep_in_memory=True in map operations, intermediate processing stays in memory
