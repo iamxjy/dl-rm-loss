@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use HuggingFaceH4/ultrachat_200k test_gen prompts.",
     )
-    parser.add_argument("--judge-model", default="gpt-4o-mini", help="OpenAI model id for judging.")
+    parser.add_argument("--judge-model", default="gpt-5-mini", help="OpenAI model id for judging.")
     parser.add_argument(
         "--max-prompts",
         type=int,
