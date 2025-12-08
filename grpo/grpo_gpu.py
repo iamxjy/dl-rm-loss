@@ -37,11 +37,13 @@ accelerate launch \
     --use_peft \
     --lora_target_modules "q_proj", "v_proj" \
     --log_completions \
-    --reward_model_path reward_modeling/models_noise15_epoch1/Qwen2-0.5B-Reward-clean-BT/checkpoint-969/
-
+    --reward_model_path reward_modeling/models_noise15_epoch1/Qwen2-0.5B-Reward-clean-BT/checkpoint-969/ \
+    --eval_strategy steps \
+    --eval_steps 100
 """
 
 import os
+import random
 from dataclasses import dataclass
 
 import torch
@@ -178,11 +180,6 @@ if __name__ == "__main__":
             print(f"[Rank {state.process_index}] Loading dataset (main process)...", flush=True)
             dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_gen", cache_dir=cache_dir)
             print(f"[Rank {state.process_index}] Dataset loaded, size: {len(dataset)}", flush=True)
-            
-            # Create train/test split
-            print(f"[Rank {state.process_index}] Creating train/test split...", flush=True)
-            dataset = dataset.train_test_split(test_size=1000, seed=42)
-            print(f"[Rank {state.process_index}] Split complete", flush=True)
         else:
             print(f"[Rank {state.process_index}] Waiting for main process to load dataset...", flush=True)
         
@@ -195,8 +192,6 @@ if __name__ == "__main__":
         if not state.is_main_process:
             print(f"[Rank {state.process_index}] Loading dataset from cache...", flush=True)
             dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_gen", cache_dir=cache_dir)
-            print(f"[Rank {state.process_index}] Creating train/test split...", flush=True)
-            dataset = dataset.train_test_split(test_size=1000, seed=42)
             print(f"[Rank {state.process_index}] Dataset ready", flush=True)
         
         state.wait_for_everyone()
@@ -227,15 +222,40 @@ if __name__ == "__main__":
     dataset = dataset.map(format_ultrachat_for_grpo, num_proc=1)
     print(f"[Rank {state.process_index}] Dataset formatted successfully", flush=True)
 
-    train_dataset = dataset["train"]
-    eval_dataset = dataset["test"] if training_args.eval_strategy != "no" else None
-
-    # Reduce dataset to 1/15 of original size for faster training
-    original_size = len(train_dataset)
+    # Calculate train size (1/15 of full dataset)
+    original_size = len(dataset)
     target_size = original_size // 15
-    print(f"[Rank {state.process_index}] Reducing dataset from {original_size} to {target_size} samples (1/15 size)", flush=True)
-    train_dataset = train_dataset.select(range(target_size))
-    print(f"[Rank {state.process_index}] Dataset reduced successfully, new size: {len(train_dataset)}", flush=True)
+    print(f"[Rank {state.process_index}] Full dataset size: {original_size}", flush=True)
+    print(f"[Rank {state.process_index}] Using first {target_size} samples (1/15) for training", flush=True)
+    
+    # Train dataset: first 1/15 of the dataset
+    train_dataset = dataset.select(range(target_size))
+    print(f"[Rank {state.process_index}] Train dataset size: {len(train_dataset)}", flush=True)
+    
+    # Eval dataset: 1000 random samples from the remaining data (excluding first 1/15)
+    eval_dataset = None
+    if training_args.eval_strategy != "no":
+        remaining_size = original_size - target_size
+        eval_sample_size = min(1000, remaining_size)
+        if eval_sample_size > 0:
+            # Select random indices from the remaining portion [target_size:]
+            random.seed(42)  # For reproducibility
+            remaining_indices = list(range(target_size, original_size))
+            eval_indices = random.sample(remaining_indices, eval_sample_size)
+            eval_indices.sort()  # Sort for consistent ordering
+            eval_dataset = dataset.select(eval_indices)
+            print(f"[Rank {state.process_index}] Eval dataset: {len(eval_dataset)} random samples from indices [{target_size}:{original_size}]", flush=True)
+        else:
+            print(f"[Rank {state.process_index}] WARNING: Not enough remaining data for eval set (need 1000, have {remaining_size})", flush=True)
+    
+    # Log eval dataset info
+    if eval_dataset is not None:
+        print(f"[Rank {state.process_index}] Eval dataset size: {len(eval_dataset)}", flush=True)
+        print(f"[Rank {state.process_index}] Eval strategy: {training_args.eval_strategy}", flush=True)
+        if hasattr(training_args, 'eval_steps'):
+            print(f"[Rank {state.process_index}] Eval steps: {training_args.eval_steps}", flush=True)
+    else:
+        print(f"[Rank {state.process_index}] No eval dataset (eval_strategy='{training_args.eval_strategy}')", flush=True)
 
     if script_args.use_debug_subset:
         train_dataset = train_dataset.select(
@@ -312,6 +332,10 @@ if __name__ == "__main__":
     )
     
     print(f"[Rank {state.process_index}] GRPOTrainer initialized successfully!", flush=True)
+    if eval_dataset is not None:
+        print(f"[Rank {state.process_index}] ✓ Eval dataset configured: {len(eval_dataset)} samples", flush=True)
+    else:
+        print(f"[Rank {state.process_index}] ⚠ No eval dataset - set --eval_strategy to enable evaluation", flush=True)
     
     # Monkey-patch the accelerator's prepare method to enable static graph after DDP wrapping
     if state.num_processes > 1:

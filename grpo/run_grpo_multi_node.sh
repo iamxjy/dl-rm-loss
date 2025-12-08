@@ -142,7 +142,7 @@ accelerate launch \
   --main_process_port 29500 \
   grpo/grpo_gpu.py \
     --model_name_or_path Qwen/Qwen3-0.6B-Base \
-    --output_dir grpo/grpo-Qwen3-0.6B-Base \
+    --output_dir grpo/grpo-Qwen3-0.6B-Base-GCE09 \
     --learning_rate 1e-5 \
     --gradient_checkpointing \
     --gradient_checkpointing_kwargs '{"use_reentrant": false}' \
@@ -154,12 +154,13 @@ accelerate launch \
     --max_completion_length 512 \
     --use_peft \
     --lora_target_modules "q_proj" "v_proj" \
-    --reward_model_path reward_modeling/models_final/Qwen3-0.6B-Base-noisy40-BT/checkpoint-969/ \
+    --reward_model_path reward_modeling/models_final/Qwen3-0.6B-Base-noisy40-GCE09/checkpoint-969/ \
     --report_to wandb \
     --logging_steps 10 \
-    --save_steps 100 \
+    --save_steps 500 \
+    --eval_strategy steps \
     --eval_steps 100 \
-    --run_name grpo-Qwen3-0.6B-$(date +%Y%m%d-%H%M%S) 2>&1
+    --run_name grpo-Qwen3-0.6B-GCE09-$(date +%Y%m%d-%H%M%S) 2>&1
 LAUNCH_EOF
 
 # Replace placeholder with actual master node
