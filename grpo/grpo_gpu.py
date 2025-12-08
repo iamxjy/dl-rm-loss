@@ -330,7 +330,46 @@ if __name__ == "__main__":
         trainer.accelerator._prepare_one = patched_prepare
         print(f"[Rank {state.process_index}] DDP static graph hook installed", flush=True)
 
-    trainer.train()
+    # Check if we should resume from a checkpoint
+    resume_from_checkpoint = None
+    if hasattr(training_args, 'resume_from_checkpoint') and training_args.resume_from_checkpoint:
+        resume_from_checkpoint = training_args.resume_from_checkpoint
+        print(f"[Rank {state.process_index}] Resuming training from checkpoint: {resume_from_checkpoint}", flush=True)
+    elif os.path.exists(training_args.output_dir):
+        # Auto-detect latest valid checkpoint if output_dir exists
+        checkpoint_dirs = [d for d in os.listdir(training_args.output_dir) if d.startswith("checkpoint-") and os.path.isdir(os.path.join(training_args.output_dir, d))]
+        if checkpoint_dirs:
+            # Filter to only valid checkpoints (those with trainer_state.json)
+            valid_checkpoints = []
+            for d in checkpoint_dirs:
+                checkpoint_path = os.path.join(training_args.output_dir, d)
+                if os.path.exists(os.path.join(checkpoint_path, "trainer_state.json")):
+                    try:
+                        checkpoint_num = int(d.split("-")[1])
+                        valid_checkpoints.append((checkpoint_num, checkpoint_path))
+                    except (ValueError, IndexError):
+                        continue
+            
+            # Get the latest valid checkpoint
+            if valid_checkpoints:
+                valid_checkpoints.sort(key=lambda x: x[0], reverse=True)
+                resume_from_checkpoint = valid_checkpoints[0][1]
+                print(f"[Rank {state.process_index}] Auto-detected latest valid checkpoint: {resume_from_checkpoint}", flush=True)
+                
+                # Fix corrupted RNG state files by patching the trainer's _load_rng_state method
+                # This allows resuming even if some RNG files are corrupted or missing
+                original_load_rng = trainer._load_rng_state
+                def patched_load_rng_state(checkpoint):
+                    try:
+                        original_load_rng(checkpoint)
+                    except (OSError, IOError, RuntimeError, FileNotFoundError) as e:
+                        print(f"[Rank {state.process_index}] WARNING: Failed to load RNG state from checkpoint (this is OK, training will continue with new RNG state): {e}", flush=True)
+                        # Continue without loading RNG state - training will work fine
+                        # RNG state is only for reproducibility, not required for resuming
+                
+                trainer._load_rng_state = patched_load_rng_state
+
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     # Save on main process only (hub push disabled)
     accelerator = getattr(trainer, "accelerator", None)
