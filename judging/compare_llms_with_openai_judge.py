@@ -103,11 +103,14 @@ def generate(
         prompts = [prompts]
 
     if getattr(tokenizer, "chat_template", None):
+        # Disable any built-in "thinking" sections in chat templates
+        chat_template_kwargs = {"enable_thinking": False}
         prompts = [
             tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
                 add_generation_prompt=True,
                 tokenize=False,
+                **chat_template_kwargs,
             )
             for prompt in prompts
         ]
