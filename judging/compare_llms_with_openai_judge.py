@@ -7,6 +7,8 @@ import argparse
 import csv
 import json
 import os
+import random
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -21,7 +23,7 @@ from trl.experimental.judges import OpenAIPairwiseJudge
 
 @dataclass
 class GenerationConfig:
-    max_new_tokens: int = 1024
+    max_new_tokens: int = 64
     temperature: float = 0.0
     top_p: float = 1.0
 
@@ -61,6 +63,24 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8,
         help="Batch size for generation.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for prompt shuffling.",
+    )
+    parser.add_argument(
+        "--judge-batch-size",
+        type=int,
+        default=400,
+        help="Judge this many prompt pairs at a time.",
+    )
+    parser.add_argument(
+        "--judge-sleep",
+        type=float,
+        default=60.0,
+        help="Sleep seconds between judge batches to avoid rate limits.",
     )
     parser.add_argument(
         "--jsonl-out",
@@ -317,17 +337,22 @@ def main() -> None:
     print(f"Model B: {model_b_id}")
     print(f"Judge model: {args.judge_model}")
 
+    random.seed(args.seed)
+
     if args.arena_hard:
         prompts: Sequence[str] = load_arena_hard_prompts()
     elif args.ultrachat_test_gen:
         prompts = load_ultrachat_test_gen_prompts()
     else:
-        prompts = (
+        prompts = [
             "Explain gravity like I'm 12.",
             "Give me a 1-sentence summary of the French Revolution.",
             "List three creative ice cream flavors.",
             "Write a haiku about the ocean.",
-        )
+        ]
+
+    prompts = list(prompts)
+    random.shuffle(prompts)
     if args.max_prompts is not None:
         prompts = prompts[: args.max_prompts]
 
@@ -359,7 +384,16 @@ def main() -> None:
 
     judge = OpenAIPairwiseJudge(model=args.judge_model, max_requests=1_000)
     print("Querying judge (0 means first response wins, 1 means second)...")
-    ranks = judge.judge(prompts=list(prompts), completions=pairs, shuffle_order=True)
+
+    ranks: list[int] = []
+    for prompt_batch, pair_batch in zip(
+        batched(list(prompts), args.judge_batch_size), batched(pairs, args.judge_batch_size), strict=True
+    ):
+        ranks.extend(judge.judge(prompts=list(prompt_batch), completions=list(pair_batch), shuffle_order=True))
+        if len(ranks) < len(prompts):
+            time.sleep(args.judge_sleep)
+            print(f"Sleeping for {args.judge_sleep} seconds to avoid rate limits...")
+            print(f"Progress: {len(ranks)}/{len(prompts)} prompts judged")
 
     wins_a = sum(rank == 0 for rank in ranks)
     wins_b = sum(rank == 1 for rank in ranks)
