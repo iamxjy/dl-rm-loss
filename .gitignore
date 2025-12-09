@@ -148,3 +148,6 @@ wandb/
 **/*_wandb_config/
 **/wandb_api_key.txt
 **/wandb_config/api_key.txt
+
+#output files
+judging/results*/
