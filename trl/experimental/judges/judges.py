@@ -393,7 +393,7 @@ class OpenAIPairwiseJudge(BasePairwiseJudge):
                 completion = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    max_completion_tokens=16,  # allow a few extra tokens to avoid truncation
+                    max_completion_tokens=32,  # allow a few extra tokens to avoid truncation
                     reasoning_effort="none",
                 )
             except Exception as exc:  # Defensive: avoid crashing the whole run on a single bad request.
