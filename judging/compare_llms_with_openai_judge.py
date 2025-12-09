@@ -21,7 +21,7 @@ from trl.experimental.judges import OpenAIPairwiseJudge
 
 @dataclass
 class GenerationConfig:
-    max_new_tokens: int = 128
+    max_new_tokens: int = 1024
     temperature: float = 0.0
     top_p: float = 1.0
 
