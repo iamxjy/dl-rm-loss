@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
 
 def load_model_and_tokenizer(model_id: str, device: str):
     model_id = os.path.expanduser(model_id)
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side="left")
     # Some tiny models may not have a pad token; fall back to eos.
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
