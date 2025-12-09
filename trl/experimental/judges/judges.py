@@ -57,6 +57,7 @@ Here are the unordered outputs from the models. Each output is associated with a
 ## Task
 
 Evaluate the models on the basis of the quality and relevance of their results, and select the model that generated the best result. Reply with the identifier of the best model. Our evaluation will only take into account the first character of your answer, so make sure it contains only one of the identifiers and nothing else (no quotation marks, no spaces, no new lines, ...).
+IMPORTANT: Output strictly a single character: "0" if the first output is better, "1" if the second is better.
 '''
 
 
@@ -393,7 +394,7 @@ class OpenAIPairwiseJudge(BasePairwiseJudge):
                 completion = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    max_completion_tokens=32,  # allow a few extra tokens to avoid truncation
+                    max_completion_tokens=2048,  # allow a few extra tokens to avoid truncation
                     reasoning_effort="none",
                 )
             except Exception as exc:  # Defensive: avoid crashing the whole run on a single bad request.
