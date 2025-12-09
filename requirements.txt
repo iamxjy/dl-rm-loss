@@ -3,3 +3,4 @@ datasets>=3.0.0
 transformers>=4.56.1
 python-dotenv>=1.0.1
 openai>=1.35
+bitsandbytes>=0.45.0

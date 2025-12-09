@@ -1,37 +1,29 @@
 #!/bin/bash
-#SBATCH --job-name=reward_modeling
-#SBATCH --output=reward_modeling/logs/%j.out
-#SBATCH --error=reward_modeling/logs/%j.err
-#SBATCH --time=24:00:00
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:1
-#SBATCH --partition=gpu
 
 # Change to project root directory
-cd /data/scratch/irisxu/classes/deep_learning/dl-rm-loss
+cd /proj/inf-scaling/iris/dl-rm-loss
 
 # Activate conda environment
-conda activate occ-llm
+source venv/bin/activate
+
+# Noise variant then GCE q
+NOISE="${1:-clean}"
+GCE_Q="${2:-0.7}"
 
 # Print job information
 echo "Job ID: $SLURM_JOB_ID"
 echo "Start Time: $(date)"
 echo "Working Directory: $(pwd)"
-
+echo "Noise: ${NOISE}"
+echo "GCE_q: ${GCE_Q}"
 # Create logs directory if it doesn't exist
 mkdir -p reward_modeling/logs
 
-OUTPUT_DIR="reward_modeling/Qwen2-0.5B-Reward-GCE"
-MODEL_NAME="Qwen/Qwen2-0.5B-Instruct"
-DATASET_NAME="datasets/ultrafeedback_binarized_clean"
-
 python reward_modeling/reward_modeling.py \
-    --model_name_or_path $MODEL_NAME \
-    --dataset_name $DATASET_NAME \
-    --output_dir $OUTPUT_DIR \
+    --model_name_or_path Qwen/Qwen3-0.6B-Base \
+    --dataset_name datasets/ultrafeedback_binarized_$NOISE \
+    --hf_cache_dir /proj/inf-scaling/iris/hf_cache \
+    --output_dir reward_modeling/models_final/Qwen3-0.6B-Base-$NOISE-GCE-$GCE_Q \
     --per_device_train_batch_size 8 \
     --num_train_epochs 1 \
     --gradient_checkpointing True \
@@ -40,7 +32,7 @@ python reward_modeling/reward_modeling.py \
     --eval_steps 50 \
     --max_length 2048 \
     --loss_type gce \
-    --gce_q 0.7
+    --gce_q $GCE_Q
 
 # Check exit status
 if [ $? -eq 0 ]; then

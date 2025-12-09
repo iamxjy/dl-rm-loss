@@ -1,0 +1,476 @@
+"""Compare two models using OpenAI as a pairwise judge.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import random
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Iterable, Sequence
+
+import torch
+from datasets import load_dataset
+from dotenv import load_dotenv
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+from trl.experimental.judges import OpenAIPairwiseJudge
+
+
+@dataclass
+class GenerationConfig:
+    max_new_tokens: int = 64
+    temperature: float = 0.0
+    top_p: float = 1.0
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Compare two HF models with an OpenAI LLM judge.")
+    parser.add_argument(
+        "--model-a",
+        default="Qwen/Qwen2-0.5B-Instruct",
+        help="HF model id or local path for candidate A.",
+    )
+    parser.add_argument(
+        "--model-b",
+        default="Qwen/Qwen3-0.6B",
+        help="HF model id or local path for candidate B.",
+    )
+    prompt_group = parser.add_mutually_exclusive_group()
+    prompt_group.add_argument(
+        "--arena-hard",
+        action="store_true",
+        help="Use Arena-Hard-Auto v2.0 prompts.",
+    )
+    prompt_group.add_argument(
+        "--ultrachat-test-gen",
+        action="store_true",
+        help="Use HuggingFaceH4/ultrachat_200k test_gen prompts.",
+    )
+    parser.add_argument("--judge-model", default="gpt-5.1", help="OpenAI model id for judging.")
+    parser.add_argument(
+        "--max-prompts",
+        type=int,
+        default=1_000,
+        help="Limit number of prompts evaluated (defaults to 1000).",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Batch size for generation.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for prompt shuffling.",
+    )
+    parser.add_argument(
+        "--judge-batch-size",
+        type=int,
+        default=400,
+        help="Judge this many prompt pairs at a time.",
+    )
+    parser.add_argument(
+        "--judge-sleep",
+        type=float,
+        default=60.0,
+        help="Sleep seconds between judge batches to avoid rate limits.",
+    )
+    parser.add_argument(
+        "--jsonl-out",
+        type=str,
+        nargs="?",
+        const="judging/results/per_prompt.jsonl",
+        default="judging/results/per_prompt.jsonl",
+        help="Path to write per-prompt records as JSONL (defaults to judging/results/per_prompt.jsonl when omitted).",
+    )
+    parser.add_argument(
+        "--csv-out",
+        type=str,
+        nargs="?",
+        const="judging/results/summary.csv",
+        default="judging/results/summary.csv",
+        help="Path to write a CSV summary (defaults to judging/results/summary.csv when omitted).",
+    )
+    parser.add_argument(
+        "--load-in-4bit",
+        action="store_true",
+        help="Load both HF models in 4-bit quantization (bitsandbytes).",
+    )
+    parser.add_argument(
+        "--load-in-8bit",
+        action="store_true",
+        help="Load both HF models in 8-bit quantization (bitsandbytes).",
+    )
+    parser.add_argument(
+        "--torch-dtype",
+        choices=["auto", "bfloat16", "float16", "float32"],
+        default="auto",
+        help="Torch dtype for non-quantized loads (ignored when --load-in-4bit is set).",
+    )
+    return parser.parse_args()
+
+
+def load_model_and_tokenizer(
+    model_id: str, device: str, load_in_4bit: bool = False, load_in_8bit: bool = False, torch_dtype_str: str = "auto"
+):
+    model_id = os.path.expanduser(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side="left")
+    # Some tiny models may not have a pad token; fall back to eos.
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    dtype_lookup = {
+        "auto": None,
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }
+    torch_dtype = dtype_lookup[torch_dtype_str]
+
+    if load_in_4bit and load_in_8bit:
+        raise ValueError("Choose only one of --load-in-4bit or --load-in-8bit.")
+
+    model_kwargs: dict = {}
+    if load_in_4bit:
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_quant_type="nf4"
+        )
+        model_kwargs["device_map"] = "auto"
+    elif load_in_8bit:
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+        model_kwargs["device_map"] = "auto"
+    else:
+        if torch_dtype is not None:
+            model_kwargs["torch_dtype"] = torch_dtype
+
+    model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
+    if not load_in_4bit and not load_in_8bit:
+        model = model.to(device)
+    model.eval()
+    return model, tokenizer
+
+
+def generate(
+    model,
+    tokenizer,
+    prompts: Sequence[str],
+    device: str,
+    config: GenerationConfig,
+) -> list[str]:
+    if isinstance(prompts, str):
+        prompts = [prompts]
+
+    if getattr(tokenizer, "chat_template", None):
+        # Disable any built-in "thinking" sections in chat templates
+        chat_template_kwargs = {"enable_thinking": False}
+        prompts = [
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                add_generation_prompt=True,
+                tokenize=False,
+                **chat_template_kwargs,
+            )
+            for prompt in prompts
+        ]
+
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
+    with torch.inference_mode():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=config.max_new_tokens,
+            do_sample=config.temperature > 0,
+            temperature=config.temperature if config.temperature > 0 else None,
+            top_p=config.top_p,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+    generations: list[str] = []
+    for prompt, output_ids in zip(prompts, outputs, strict=True):
+        full_text = tokenizer.decode(output_ids, skip_special_tokens=True)
+        # Best effort to strip the prompt prefix.
+        if full_text.startswith(prompt):
+            generations.append(full_text[len(prompt) :].strip())
+        else:
+            generations.append(full_text.strip())
+    return generations
+
+
+def load_arena_hard_prompts() -> list[str]:
+    """Load Arena-Hard-Auto v2.0 prompts from question.jsonl via datasets."""
+    cache_dir = os.getenv("HF_DATASETS_CACHE")
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+
+    # Only load the v2.0 question file and keep streaming to tolerate schema variety.
+    ds: Iterable[dict] = load_dataset(
+        "lmarena-ai/arena-hard-auto",
+        data_files="data/arena-hard-v2.0/question.jsonl",
+        split="train",
+        streaming=True,
+        cache_dir=cache_dir,
+    )
+
+    def extract_prompt(row: dict) -> str | None:
+        # 1) messages/turns-style schemas
+        for key in ("messages", "turns"):
+            seq = row.get(key)
+            if isinstance(seq, list) and seq:
+                first = seq[0]
+                if isinstance(first, dict):
+                    content = first.get("content") or first.get("text")
+                    if isinstance(content, str):
+                        return content
+                    # If content is a list of segments, consider joining them.
+                elif isinstance(first, str):
+                    return first
+
+        # 2) Simple text fields
+        for key in ("prompt", "question", "instruction", "user"):
+            v = row.get(key)
+            if isinstance(v, str):
+                return v
+
+        return None
+
+    iterator = iter(ds)
+    try:
+        first_row = next(iterator)
+    except StopIteration:
+        raise ValueError("No rows found in Arena-Hard-Auto v2.0 question.jsonl.")
+
+    prompts: list[str] = []
+    first_prompt = extract_prompt(first_row)
+    if first_prompt:
+        prompts.append(first_prompt)
+
+    for row in iterator:
+        prompt = extract_prompt(row)
+        if prompt:
+            prompts.append(prompt)
+
+    if not prompts:
+        raise ValueError("No prompts extracted from Arena-Hard-Auto v2.0 question.jsonl.")
+
+    return prompts
+
+
+def load_ultrachat_test_gen_prompts() -> list[str]:
+    """Load prompts from HuggingFaceH4/ultrachat_200k test_gen split."""
+    cache_dir = os.getenv("HF_DATASETS_CACHE")
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+
+    ds = load_dataset("HuggingFaceH4/ultrachat_200k", split="test_gen", cache_dir=cache_dir)
+    prompts = [p for p in ds["prompt"] if isinstance(p, str)]
+
+    if not prompts:
+        raise ValueError("No prompts extracted from HuggingFaceH4/ultrachat_200k test_gen.")
+
+    return prompts
+
+
+def _prepare_path(path: str | os.PathLike[str]) -> Path:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def save_jsonl_per_prompt(
+    path: str,
+    prompts: Sequence[str],
+    pairs: Sequence[Sequence[str]],
+    ranks: Sequence[int],
+    run_metadata: dict,
+) -> None:
+    """Write one JSON object per prompt with full completions and judge pick."""
+    p = _prepare_path(path)
+    with p.open("w", encoding="utf-8") as f:
+        for idx, (prompt, pair, rank) in enumerate(zip(prompts, pairs, ranks, strict=True)):
+            winner = (
+                run_metadata["model_a"]
+                if rank == 0
+                else run_metadata["model_b"]
+                if rank == 1
+                else None
+            )
+            record = {
+                **run_metadata,
+                "prompt_idx": idx,
+                "prompt": prompt,
+                "completion_a": pair[0],
+                "completion_b": pair[1],
+                "judge_pick": rank,
+                "winner_model": winner,
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def save_csv_summary(
+    path: str,
+    prompts: Sequence[str],
+    ranks: Sequence[int],
+    run_metadata: dict,
+    wins_a: int,
+    wins_b: int,
+) -> None:
+    """Write a lightweight CSV: per-prompt winner plus a totals row."""
+    p = _prepare_path(path)
+    fieldnames = [
+        "prompt_idx",
+        "prompt",
+        "judge_pick",
+        "winner_model",
+        "model_a",
+        "model_b",
+        "judge_model",
+    ]
+    with p.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for idx, (prompt, rank) in enumerate(zip(prompts, ranks, strict=True)):
+            winner = (
+                run_metadata["model_a"]
+                if rank == 0
+                else run_metadata["model_b"]
+                if rank == 1
+                else None
+            )
+            writer.writerow(
+                {
+                    "prompt_idx": idx,
+                    "prompt": prompt,
+                    "judge_pick": rank,
+                    "winner_model": winner,
+                    "model_a": run_metadata["model_a"],
+                    "model_b": run_metadata["model_b"],
+                    "judge_model": run_metadata["judge_model"],
+                }
+            )
+        writer.writerow(
+            {
+                "prompt_idx": "total",
+                "prompt": "",
+                "judge_pick": "",
+                "winner_model": f"{wins_a} vs {wins_b}",
+                "model_a": run_metadata["model_a"],
+                "model_b": run_metadata["model_b"],
+                "judge_model": run_metadata["judge_model"],
+            }
+        )
+
+
+def main() -> None:
+    args = parse_args()
+    load_dotenv()
+
+    if "OPENAI_API_KEY" not in os.environ:
+        raise SystemExit("Please set OPENAI_API_KEY in the environment.")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model_a_id = os.path.expanduser(args.model_a)
+    model_b_id = os.path.expanduser(args.model_b)
+
+    print(f"Using device: {device}")
+    print(f"Model A: {model_a_id}")
+    print(f"Model B: {model_b_id}")
+    print(f"Judge model: {args.judge_model}")
+
+    random.seed(args.seed)
+
+    if args.arena_hard:
+        prompts: Sequence[str] = load_arena_hard_prompts()
+    elif args.ultrachat_test_gen:
+        prompts = load_ultrachat_test_gen_prompts()
+    else:
+        prompts = [
+            "Explain gravity like I'm 12.",
+            "Give me a 1-sentence summary of the French Revolution.",
+            "List three creative ice cream flavors.",
+            "Write a haiku about the ocean.",
+        ]
+
+    prompts = list(prompts)
+    random.shuffle(prompts)
+    if args.max_prompts is not None:
+        prompts = prompts[: args.max_prompts]
+
+    gen_config = GenerationConfig()
+    model_a, tok_a = load_model_and_tokenizer(
+        model_a_id,
+        device,
+        load_in_4bit=args.load_in_4bit,
+        load_in_8bit=args.load_in_8bit,
+        torch_dtype_str=args.torch_dtype,
+    )
+    model_b, tok_b = load_model_and_tokenizer(
+        model_b_id,
+        device,
+        load_in_4bit=args.load_in_4bit,
+        load_in_8bit=args.load_in_8bit,
+        torch_dtype_str=args.torch_dtype,
+    )
+
+    run_metadata = {
+        "model_a": model_a_id,
+        "model_b": model_b_id,
+        "judge_model": args.judge_model,
+        "generation": asdict(gen_config),
+        "num_prompts": len(prompts),
+        "load_in_4bit": args.load_in_4bit,
+        "load_in_8bit": args.load_in_8bit,
+        "torch_dtype": args.torch_dtype,
+    }
+
+    print(f"Generating completions for {len(prompts)} prompts...")
+    completions_a: list[str] = []
+    completions_b: list[str] = []
+
+    def batched(seq: Sequence[str], batch_size: int):
+        for idx in range(0, len(seq), batch_size):
+            yield seq[idx : idx + batch_size]
+
+    for prompt_batch in batched(list(prompts), args.batch_size):
+        completions_a.extend(generate(model_a, tok_a, prompt_batch, device, gen_config))
+        completions_b.extend(generate(model_b, tok_b, prompt_batch, device, gen_config))
+
+    pairs = [list(pair) for pair in zip(completions_a, completions_b, strict=True)]
+
+    judge = OpenAIPairwiseJudge(model=args.judge_model, max_requests=1_000)
+    print("Querying judge (0 means first response wins, 1 means second)...")
+
+    ranks: list[int] = []
+    for prompt_batch, pair_batch in zip(
+        batched(list(prompts), args.judge_batch_size), batched(pairs, args.judge_batch_size), strict=True
+    ):
+        ranks.extend(judge.judge(prompts=list(prompt_batch), completions=list(pair_batch), shuffle_order=True))
+        if len(ranks) < len(prompts):
+            time.sleep(args.judge_sleep)
+            print(f"Sleeping for {args.judge_sleep} seconds to avoid rate limits...")
+            print(f"Progress: {len(ranks)}/{len(prompts)} prompts judged")
+
+    wins_a = sum(rank == 0 for rank in ranks)
+    wins_b = sum(rank == 1 for rank in ranks)
+    if args.jsonl_out:
+        save_jsonl_per_prompt(args.jsonl_out, prompts, pairs, ranks, run_metadata)
+        print(f"Wrote per-prompt JSONL to {args.jsonl_out}")
+    if args.csv_out:
+        save_csv_summary(args.csv_out, prompts, ranks, run_metadata, wins_a, wins_b)
+        print(f"Wrote CSV summary to {args.csv_out}")
+    total = len(prompts)
+    ties = total - wins_a - wins_b
+    print(
+        f"Final summary: {model_a_id} wins {wins_a}/{total}, "
+        f"{model_b_id} wins {wins_b}/{total}, ties {ties}."
+    )
+
+
+if __name__ == "__main__":
+    main()
+
